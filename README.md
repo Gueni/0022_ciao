@@ -1,6 +1,6 @@
-# MatePad SE 11 (AGS6-W09) cleanup — 2026-11-18
+# MatePad SE 11 (AGS6-W09) cleanup
 
-HarmonyOS 2.0.0.156 (Android 10 / API 29). Bootloader is locked (Huawei), so no custom ROM — this is a no-root setup.
+HarmonyOS 2.0.0.156 (Android 10 / API 29).This is a no-root setup.
 
 ## What was done (via `platform-tools\adb.exe`)
 - **Google:** microG for Huawei (`com.google.android.gms` 0.3.17-hw) + microG Companion were already installed from AppGallery and working (signature spoofing OK, Google account signed in).
@@ -11,7 +11,7 @@ HarmonyOS 2.0.0.156 (Android 10 / API 29). Bootloader is locked (Huawei), so no 
 - Battery-optimisation whitelist: Lawnchair, Aurora, microG.
 - Full package list before changes: `packages-before.txt`.
 
-## iPad-style setup (2026-11-18, later)
+## iPad-style setup
 - Also installed: Lawnicons, Breezy Weather (`org.breezyweather`), Etar calendar (`ws.xsoh.etar`), Auxio music (`org.oxycblt.auxio`). APKs in `apks\`.
 - Wallpaper: `wallpaper.png` (generated). System dark mode on, animations 0.7x.
 - Lawnchair: system icons in iOS shape, 5x6 grid (shows as two panels in portrait), icons 120%, floating dock (6 apps, no labels, no search bar), At a Glance = date + time, Caddy (App-Library-style) drawer at 70% opacity, 11 system apps hidden from the drawer.

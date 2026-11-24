@@ -1,6 +1,8 @@
 package com.ciao.tabletpen;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.widget.FrameLayout;
 import android.bluetooth.BluetoothAdapter;
 import android.content.SharedPreferences;
 import android.net.Uri;
@@ -28,6 +30,8 @@ public class MainActivity extends Activity implements Hub.Js {
     private static final String ORIGIN = "https://tabletpen.local";
 
     private WebView web;
+    private FrameLayout root;
+    private YouTubeView yt;
     private Hub hub;
     private Net net;
     private Ble ble;
@@ -65,7 +69,10 @@ public class MainActivity extends Activity implements Hub.Js {
                 return serve(req.getUrl());
             }
         });
-        setContentView(web);
+        root = new FrameLayout(this);
+        root.addView(web);
+        setContentView(root);
+        yt = new YouTubeView(this, root, hub);
         web.loadUrl(ORIGIN + "/");
         web.setOnSystemUiVisibilityChangeListener(v -> {
             if ((v & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) web.postDelayed(this::immersive, 1500);
@@ -90,6 +97,11 @@ public class MainActivity extends Activity implements Hub.Js {
                 String mime = f.length > 12 && f[0] == 'R' && f[1] == 'I' && f[8] == 'W' ? "image/webp" : "image/jpeg";
                 return new WebResourceResponse(mime, null, 200, "OK", h, new ByteArrayInputStream(f));
             }
+            if (path.equals("/img")) {
+                byte[] f = hub.image(u.getQueryParameter("k"));
+                if (f == null) return new WebResourceResponse("image/jpeg", null, 404, "none", h, new ByteArrayInputStream(new byte[0]));
+                return new WebResourceResponse("image/jpeg", null, 200, "OK", h, new ByteArrayInputStream(f));
+            }
             if (path.equals("/") || path.equals("/pad.html"))
                 return new WebResourceResponse("text/html", "utf-8", 200, "OK", h, getAssets().open("pad.html"));
         } catch (Exception ignored) {}
@@ -108,6 +120,12 @@ public class MainActivity extends Activity implements Hub.Js {
         super.onResume();
         immersive();
         net.foreground(true);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (yt.back()) return;                     // YouTube tab: leave fullscreen / go back a page
+        moveTaskToBack(true);                      // keep running (and connected) in the background
     }
 
     @Override
@@ -137,6 +155,23 @@ public class MainActivity extends Activity implements Hub.Js {
     }
 
     class Bridge {
+        /** The YouTube tab: shown right of the sidebar (and above the key bar when it's open). */
+        @JavascriptInterface
+        public void youtube(final boolean show, final int leftPx, final int bottomPx) {
+            runOnUiThread(() -> { yt.show(show, leftPx, bottomPx); if (!show) immersive(); });
+        }
+
+        @JavascriptInterface
+        public void ytNav(final String cmd) {
+            runOnUiThread(() -> yt.nav(cmd));
+        }
+
+        @JavascriptInterface
+        public void setYtCookies(final String json) {
+            runOnUiThread(() -> yt.setCookies(json));
+        }
+
+
         @JavascriptInterface
         public void start() {           // page loaded: send it the current state
             hub.publish();

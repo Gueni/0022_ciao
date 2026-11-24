@@ -55,6 +55,20 @@ class BleLink(Link):
             await self.send(hdr + jpg[i * n:(i + 1) * n])
         return True
 
+    async def send_big(self, data: bytes):
+        """Media lists and images: split into 0x23 chunks the tablet puts back together."""
+        n = max(20, min(self.client.mtu_size - 3, 509))
+        if len(data) <= n:
+            return await self.send(data)
+        n -= 6
+        total = (len(data) + n - 1) // n
+        self._bid = (getattr(self, "_bid", 0) + 1) & 0xFF
+        for i in range(total):
+            if self.closed:
+                return
+            hdr = bytes([0x23, self._bid]) + i.to_bytes(2, "little") + total.to_bytes(2, "little")
+            await self.send(hdr + data[i * n:(i + 1) * n])
+
     def close(self):
         self.gone.set()
 

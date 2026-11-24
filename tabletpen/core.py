@@ -10,6 +10,9 @@ Tablet -> PC packets:
   0x08 w u16 h u16 preview size in device pixels
   0x09 sub ...     remote control (mouse, scroll, text, keys)
   0x0A             the last preview frame is on screen (the PC sends the next one only after this)
+  0x0B + JSON      media request (see media.py; answers are 0x30 JSON / 0x31 images)
+  0x0C + JSON      Paint command (see paint.py)
+  0x0D + JSON      mode {"mode": "pen"|"paint"|"app", "app": "youtube"|"spotify"} or media-screen action {"a": ...}
 PC -> tablet:
   0x10 + JSON      {"pc": name, "auth": "ok"|"pending"|"denied", "cfg": {w, h, name}}
   0x22 + frame     preview patch (USB / Wi-Fi)      0x20 ...  the same, in chunks (Bluetooth)
@@ -38,6 +41,8 @@ TRUST_FILE = os.path.join(DATA_DIR, "trusted.json")
 EV = struct.Struct("<BHHHbbB")
 FRAME_HDR = struct.Struct("<6H")       # canvas W, H, patch x, y, w, h (tablet pixels)
 DEBUG = bool(os.environ.get("TABLETPEN_DEBUG"))
+# preview frames allowed on their way at once: more on Wi-Fi, where each round trip can be slow
+FLIGHT = {"ble": 1, "usb": 2, "wifi": 4}
 
 
 def pictures_dir():
@@ -74,12 +79,20 @@ class Link:
         self._sending = None
         self._raw = None                 # last capture's raw pixels (cheap "nothing changed" check)
         self._still_since = None
+        self._blur = None                # area sent soft while it moved; re-sent sharp when it stops
+        self.inflight = 0                # frames sent but not yet shown by the tablet
+        self._cast_seq = -1              # last app frame used (media screen)
+        self._cast_img = None
 
     @property
     def label(self):
         return {"usb": "USB", "wifi": "Wi-Fi", "ble": "Bluetooth"}.get(self.kind, self.kind)
 
     async def send(self, data: bytes): ...
+
+    async def send_big(self, data: bytes):
+        """Packets of any size (Bluetooth splits them up)."""
+        await self.send(data)
     async def send_frame(self, jpg: bytes, abort=None) -> bool: ...
     def close(self): ...
 
@@ -97,16 +110,22 @@ class Core:
             self.pen = winput.MousePen()
         self.sct = mss.MSS()
         self.diag = {"usb": "starting…", "wifi": "starting…", "ble": "starting…"}
-        self.manual_ips = self._load_settings().get("manual_ips", [])
+        self.settings = self._load_settings()
+        self.manual_ips = self.settings.get("manual_ips", [])
         self.links = set()
         self.on_status = on_status or (lambda text: None)
         self.trusted = self._load_trust()
         self.asking = {}            # tablet id -> future of the approval popup
+        self.media = None           # media.Media, attached by main.py
+        self.screen = None          # appscreen.AppScreen (media screen), if the virtual display driver is there
+        self.paint = None           # paint.Paint
+        self.yt = None              # ytsync.YtSync: the PC side of the YouTube tab (sound on the PC)
+        self.mode = "pen"           # pen: main screen | paint: Paint's canvas | app: the media screen
         self._tls = threading.local()
         self.rect = None
         self.target_name = ""
         self.mon = 1
-        self.set_monitor(1)
+        self.set_main()
 
     # ------------------------------------------------------------ trust
     def _load_trust(self):
@@ -186,6 +205,70 @@ class Core:
             u.PostMessageW(hwnd, 0x0111, 6, 0)     # WM_COMMAND, IDYES
 
     # ------------------------------------------------------------ target area
+    def save_settings(self):
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            self.settings["manual_ips"] = self.manual_ips
+            with open(os.path.join(DATA_DIR, "settings.json"), "w") as f:
+                json.dump(self.settings, f)
+        except OSError:
+            pass
+
+    def set_main(self):
+        """The main (primary) screen – where the game / film / desktop is."""
+        self.rect = (0, 0, ctypes.windll.user32.GetSystemMetrics(0), ctypes.windll.user32.GetSystemMetrics(1))
+        self.target_name = "PC screen"
+
+    async def set_mode(self, link, req):
+        mode, app = req.get("mode"), req.get("app")
+        try:
+            if mode == "app" and self.screen:
+                self.rect = await asyncio.to_thread(self.screen.open, app)
+                self.target_name = self.screen.current.title
+            elif mode == "app":
+                raise RuntimeError("The media screen needs the virtual display driver (Parsec VDD)")
+            elif mode == "paint" and self.paint:
+                rect = await asyncio.to_thread(self.paint.open)
+                if not rect:
+                    raise RuntimeError("Couldn't find Paint's canvas")
+                self.rect, self.target_name = rect, "Paint"
+            else:
+                mode = "pen"
+                self.set_main()
+        except Exception as e:
+            log(f"[mode] {mode}: {e}")
+            await link.send(b"" + json.dumps({"toast": str(e)[:160]}).encode())
+            mode = "pen"
+            self.set_main()
+        self.pen.leave()
+        if mode != "app" and self.screen:
+            self.screen.cast.stop()                       # no app frames while the tablet shows something else
+        self.mode = mode
+        for l in self.links:
+            l._ref = None
+            l.inflight = 0
+            l.acked.set()
+        log(f"[mode] {mode} -> {self.target_name}")
+        await self.broadcast_cfg()
+
+    async def mode_loop(self):
+        """Keeps the target up to date: Paint's canvas moves when zooming / resizing."""
+        while True:
+            await asyncio.sleep(1.5)
+            if self.mode in ("paint", "app") and self.links:
+                try:
+                    if self.mode == "app":
+                        r = await asyncio.to_thread(self.screen.refresh) if self.screen else None
+                    else:
+                        r = await asyncio.to_thread(self.paint.canvas) if self.paint else None
+                    if r and r != self.rect:
+                        self.rect = r
+                        for l in self.links:
+                            l._ref = None
+                        await self.broadcast_cfg()
+                except Exception:
+                    pass
+
     def set_monitor(self, i):
         mons = self.sct.monitors
         i = max(1, min(i, len(mons) - 1))
@@ -197,7 +280,7 @@ class Core:
     def cfg(self, link):
         l, t, w, h = self.rect
         return {"pc": PC_NAME, "auth": "ok" if link.auth == "ok" else link.auth,
-                "cfg": {"w": w, "h": h, "name": self.target_name}}
+                "cfg": {"w": w, "h": h, "name": self.target_name, "mode": self.mode}}
 
     async def send_cfg(self, link):
         await link.send(b"\x10" + json.dumps(self.cfg(link), separators=(",", ":")).encode())
@@ -230,6 +313,8 @@ class Core:
                 t.cancel()
         if link.active:
             self.pen.leave()
+        if self.media:
+            self.media.link_down(link)
         if link.tablet_id:
             log(f"[{link.kind}] {link.tablet_name} disconnected")
         self.status()
@@ -270,6 +355,7 @@ class Core:
         if t == 0x05 and len(data) > 1:
             link.active = data[1] == 1
             link._ref = None                 # the tablet starts with an empty preview: send a full frame
+            link.inflight = 0
             link.acked.set()
             if not link.active:
                 self.pen.leave()
@@ -284,14 +370,86 @@ class Core:
             w, h = struct.unpack_from("<HH", data, 1)
             link.want = (max(160, min(w, 3840)), max(120, min(h, 2160)))
             link._ref = None                 # the tablet cleared its preview: send a full frame
+            if self.screen and link.active and self.screen.cast_size != link.want:
+                self.screen.restart_cast(link.want)       # app frames at exactly the tablet's size
         elif t == 0x09 and len(data) > 1:
             self._remote(data)
         elif t == 0x0A:
+            link.inflight = max(0, link.inflight - 1)
             link.acked.set()
+        elif t == 0x0B and self.media:
+            try:
+                req = json.loads(data[1:].decode("utf-8"))
+            except Exception:
+                return
+            asyncio.get_running_loop().create_task(self.media.request(link, req))
+        elif t == 0x0E and self.yt:                            # YouTube tab: what the tablet is playing
+            try:
+                self.yt.update(json.loads(data[1:].decode("utf-8")))
+            except Exception:
+                pass
+        elif t == 0x0F:
+            try:
+                req = json.loads(data[1:].decode("utf-8"))
+            except Exception:
+                return
+            asyncio.get_running_loop().create_task(self._tab_cmd(link, req))
+        elif t in (0x0C, 0x0D):
+            try:
+                req = json.loads(data[1:].decode("utf-8"))
+            except Exception:
+                return
+            asyncio.get_running_loop().create_task(self._json_cmd(link, t, req))
+
+    async def _tab_cmd(self, link, req):
+        """YouTube tab."""
+        a = req.get("a")
+        try:
+            if a == "yt_cookies" and self.yt:
+                cookies = await asyncio.to_thread(self.yt.cookies)
+                if cookies:
+                    await link.send_big(b"\x32" + json.dumps(cookies).encode())
+            elif a == "yt_signin" and self.yt:
+                await asyncio.to_thread(self.yt.show_for_signin)
+                await link.send(b"" + json.dumps({"toast": "Sign in to YouTube on the PC once – the tablet then uses that account"}).encode())
+        except Exception as e:
+            log(f"[tab] {a}: {e}")
+
+    async def _json_cmd(self, link, t, req):
+        if t == 0x0C:                                         # Paint toolbar
+            if not self.paint:
+                return
+            r = await asyncio.to_thread(self.paint.command, req)
+            if not r.get("ok") and r.get("err") == "paint":
+                await link.send(b"" + json.dumps({"toast": "Paint isn't open on the PC"}).encode())
+        elif "mode" in req:
+            await self.set_mode(link, req)
+        elif self.screen:                                     # media screen actions
+            a = req.get("a")
+            if a == "back":
+                self.screen.back()
+            elif a == "off":
+                await asyncio.to_thread(self.screen.unplug)
+                if self.mode == "app":
+                    await self.set_mode(link, {"mode": "pen"})
 
     def _remote(self, data):
         """Remote-control mode: touchpad, keyboard, media keys."""
         sub = data[1]
+        if self.mode == "app" and self.screen and sub in (3, 4, 5):   # typing goes into the media-screen app
+            if sub == 4:
+                self.screen.text(data[2:].decode("utf-8", errors="ignore"))
+            elif sub == 5:
+                vks = list(data[2:2 + 6])
+                if any(v in (173, 174, 175, 176, 177, 178, 179) for v in vks):
+                    winput.keys(*vks)                          # media / volume keys stay global
+                else:
+                    self.screen.keys(vks)
+            elif len(data) >= 6:
+                dy, _ = struct.unpack_from("<hh", data, 2)
+                x, y, w, h = self.rect
+                self.screen.scroll(x + w // 2, y + h // 2, -dy)
+            return
         if sub == 1 and len(data) >= 6:                       # relative mouse move
             dx, dy = struct.unpack_from("<hh", data, 2)
             winput.move(dx, dy)
@@ -304,6 +462,10 @@ class Core:
             winput.text(data[2:].decode("utf-8", errors="ignore"))
         elif sub == 5 and len(data) > 2:                      # key combination (virtual-key codes)
             winput.keys(*data[2:2 + 6])
+        elif sub == 6 and len(data) >= 6:                     # pointer to an exact spot (what was tapped)
+            nx, ny = struct.unpack_from("<HH", data, 2)
+            l, t, w, h = self.rect
+            winput.move_abs(l + nx / 65535 * (w - 1), t + ny / 65535 * (h - 1))
 
     def _pen(self, data):
         p = self.pen
@@ -311,6 +473,10 @@ class Core:
         for off in range(1, len(data) - EV.size + 1, EV.size):
             kind, x, y, pr, tx, ty, fl = EV.unpack_from(data, off)
             sx, sy = l + x / 65535 * (w - 1), t + y / 65535 * (h - 1)
+            if self.mode == "app" and self.screen:             # media screen: touch inside the app, no focus change
+                if kind in (0, 1, 2, 3, 4):
+                    self.screen.pen(kind, sx, sy)
+                continue
             pr /= 65535
             if kind == 0:
                 p.hover(sx, sy, tx, ty, fl)
@@ -344,6 +510,7 @@ class Core:
         elif c in (5, 6):
             link.preview = c == 5
             link._ref = None
+            link.inflight = 0
             link.acked.set()
         elif c == 7:
             try:
@@ -372,7 +539,7 @@ class Core:
         return self._tls.sct.grab({"left": l, "top": t, "width": w, "height": h})
 
     @staticmethod
-    def _patch(img, W, H, box, q, gray=False, webp=False, small=None):
+    def _patch(img, W, H, box, q, gray=False, webp=False, small=None, scale=None):
         """Encodes the `box` area of the capture `img`, scaled to the tablet's W x H canvas.
         Payload: [W, H, x, y, w, h] (u16, tablet pixels) + JPEG/WebP. Patch edges are snapped to
         tablet pixels, so patches line up exactly with what's already on the tablet."""
@@ -385,7 +552,9 @@ class Core:
         if small and (ow > small[0] or oh > small[1]):
             k = min(small[0] / ow, small[1] / oh)
             ow, oh = max(1, round(ow * k)), max(1, round(oh * k))
-        part = img.resize((ow, oh), Image.BILINEAR if gray else Image.LANCZOS,
+        if scale:                                   # moving content: fewer pixels, the tablet stretches it
+            ow, oh = max(1, round(ow * scale)), max(1, round(oh * scale))
+        part = img.resize((ow, oh), Image.BILINEAR if gray or scale else Image.LANCZOS,
                           box=(tx0 / sx, ty0 / sy, (tx0 + tw) / sx, (ty0 + th) / sy))
         if gray:
             part = part.convert("L")
@@ -404,15 +573,34 @@ class Core:
         (scrolling, switching apps) go out as a quick low-res gray frame, followed by a sharp
         full frame as soon as the screen settles."""
         maxw, maxh, q, gray, _ = link.preview_spec
-        shot = self._shot()
-        raw, now = shot.bgra, time.monotonic()
-        # fast path: identical capture (a plain byte compare) – skip the image work entirely
-        if raw == link._raw and link._ref is not None and not (gray and link._blurry):
-            if link._still_since is None:
-                link._still_since = now
-            return None
-        link._raw, link._still_since = raw, None
-        img = Image.frombytes("RGB", shot.size, raw, "raw", "BGRX")
+        now = time.monotonic()
+        settling = (gray and link._blurry) or link._blur
+        cast = self.screen.cast if self.mode == "app" and self.screen and self.screen.cast.ok else None
+        if cast:
+            # YouTube / Spotify: frames come straight from the app's renderer (no screen capture)
+            seq, jpg = cast.frame()
+            if jpg is None:
+                return None
+            if seq == link._cast_seq and link._ref is not None and not settling:
+                if link._still_since is None:
+                    link._still_since = now
+                return None
+            if seq != link._cast_seq:
+                link._cast_img = Image.open(io.BytesIO(jpg)).convert("RGB")
+                link._cast_seq = seq
+            img = link._cast_img
+            link._raw = None
+        else:
+            shot = self._shot()
+            raw = shot.bgra
+            # fast path: identical capture (a plain byte compare) – skip the image work entirely
+            if raw == link._raw and link._ref is not None and not settling:
+                if link._still_since is None:
+                    link._still_since = now
+                return None
+            link._raw = raw
+            img = Image.frombytes("RGB", shot.size, raw, "raw", "BGRX")
+        link._still_since = None
         if link.want:
             W, H = link.want
         else:
@@ -425,6 +613,12 @@ class Core:
             if gray and link._blurry and now - link._big_at >= 0.5:       # settled: make it sharp
                 link._ref, link._blurry, link._sending = img, False, img
                 return self._patch(img, W, H, full, 72, webp=True), True
+            if not gray and link._blur and now - link._big_at >= 0.35:      # motion stopped: sharpen it
+                b, d = link._blur, ImageChops.difference(img, ref).getbbox()
+                if d:
+                    b = (min(b[0], d[0]), min(b[1], d[1]), max(b[2], d[2]), max(b[3], d[3]))
+                link._blur, link._ref, link._ref_key = None, img, key
+                return self._patch(img, W, H, b, q), False
             box = ImageChops.difference(img, ref).getbbox()
             if box is None:
                 return None
@@ -434,6 +628,15 @@ class Core:
         link._ref_key = key
         if not gray:
             link._ref = img
+            if area > 0.2:
+                # video / scrolling / big animation: send just the moving part, lighter and faster, so it
+                # stays smooth; it's made sharp again as soon as it stops moving (below)
+                b = link._blur
+                link._blur = box if b is None else (min(b[0], box[0]), min(b[1], box[1]),
+                                                    max(b[2], box[2]), max(b[3], box[3]))
+                link._big_at = now
+                wifi = link.kind == "wifi"            # Wi-Fi: lighter still, it's usually the bottleneck
+                return self._patch(img, W, H, box, 62 if wifi else 68, scale=0.5 if wifi else 0.6), False
             return self._patch(img, W, H, full if area > 0.6 else box, q), False
         if area <= 0.12:
             data = self._patch(img, W, H, box, 70, webp=True)
@@ -462,19 +665,27 @@ class Core:
                     if got:
                         data, sharp = got
                         abort = (lambda: asyncio.to_thread(self._moved_on, link)) if sharp else None
-                        link.acked.clear()
                         t1 = time.perf_counter()
+                        link.inflight += 1               # counted before sending: the ack may beat us back
                         ok = await link.send_frame(data, abort=abort) is not False
+                        if not ok:
+                            link.inflight = max(0, link.inflight - 1)
                         if DEBUG:
                             log(f"[frame] {link.kind} {len(data) // 1024} KB{' sharp' if sharp else ''} "
                                 f"{'sent' if ok else 'dropped'} in {(time.perf_counter() - t1) * 1000:.0f} ms")
                         if ok:
-                            # wait until the tablet has shown it: frames never pile up, so the
-                            # preview stays live and taps/keys aren't stuck behind old frames
-                            try:
-                                await asyncio.wait_for(link.acked.wait(), 6 if link.kind == "ble" else 2)
-                            except asyncio.TimeoutError:
-                                link._ref = None          # not sure what the tablet shows: resend all
+                            # at most 2 frames on their way (1 on Bluetooth): the next one is captured
+                            # while the tablet shows the last, yet frames never pile up and taps are
+                            # never stuck behind old frames
+                            if link.inflight >= FLIGHT.get(link.kind, 2):
+                                link.acked.clear()
+                                if link.inflight < FLIGHT.get(link.kind, 2):
+                                    link.acked.set()
+                                try:
+                                    await asyncio.wait_for(link.acked.wait(), 6 if link.kind == "ble" else 2)
+                                except asyncio.TimeoutError:
+                                    link.inflight = 0
+                                    link._ref = None      # not sure what the tablet shows: resend all
                         else:
                             link._ref = None
                 except asyncio.CancelledError:
@@ -484,6 +695,10 @@ class Core:
                     await asyncio.sleep(1)
                 # screen idle for a while: look ~7x a second (saves CPU, still feels instant)
                 idle = link._still_since is not None and time.monotonic() - link._still_since > 1
-                await asyncio.sleep(max(0.01, (0.15 if idle else link.preview_spec[4]) - (time.perf_counter() - t0)))
+                if self.mode == "app" and self.screen and self.screen.cast.ok:
+                    interval = 1 / 40                     # app frames arrive by themselves: checking is cheap
+                else:
+                    interval = 0.15 if idle else link.preview_spec[4]
+                await asyncio.sleep(max(0.005, interval - (time.perf_counter() - t0)))
             else:
                 await asyncio.sleep(0.25)

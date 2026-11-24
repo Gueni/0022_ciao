@@ -27,7 +27,10 @@ USB is preferred, then Wi-Fi, then Bluetooth. Tap **link** on the tablet to see 
   Plugging in USB counts as approval.
 - **New PC over USB:** the tablet asks once to *"Allow USB debugging"*.
   Some PCs may also need the Huawei USB driver. Wi-Fi and Bluetooth need nothing.
-- **Tray menu:** overall status plus a line each for USB, Wi-Fi and Bluetooth saying what's wrong (for example a missing driver, Bluetooth off, or nothing found on the network). It also has **Connect to tablet by IP…** for networks that block discovery (the tablet shows its IP under *link*), **Open screenshots folder**, **Open log**, **Start with Windows** (on by default) and Quit.
+- **Tray menu:** overall status plus a line each for USB, Wi-Fi and Bluetooth saying what's wrong (for example a missing driver, Bluetooth off, or nothing found on the network). It also has **Connect to tablet by IP…** for networks that block discovery (the tablet shows its IP under *link*), **Turn off media screen**, **Open screenshots folder**, **Open log**, **Start with Windows** (on by default) and Quit.
+
+## Sidebar
+**link · remote · paint · media · shot · settings.** Pen and finger always draw: everything you do with them happens on the PC screen, and the tablet shows it live.
 
 ## Remote mode (🖱 in the sidebar)
 Use the tablet as a remote for the PC from the couch:
@@ -38,6 +41,22 @@ Use the tablet as a remote for the PC from the couch:
   - Apps and windows: Start, switch app, all windows, show desktop, close app, copy and paste.
   - Media: previous, play/pause, next, volume and mute, F11.
 - The pen still draws while remote mode is on.
+
+## Paint (🎨 in the sidebar)
+Opens Windows Paint on the PC (maximized, fitted to the window) and shows only its canvas on the tablet. Draw with the pen (pressure works) or a finger; it happens live in Paint.
+- **Toolbar:** pencil, brush, eraser, fill, text, color picker, select; line, rectangle, oval, triangle, arrow, star and heart; size; Paint's 20 colors; undo, redo, clear and save.
+- The toolbar presses Paint's own buttons through Windows UI Automation, so Paint shows exactly what you picked.
+
+## Media (🎵 in the sidebar)
+Music and videos from the couch, while a game or film keeps running on the PC or TV.
+- **Now playing:** every player Windows knows about (Spotify, browsers, media apps), with cover art, title, a seekable progress bar, previous / play-pause / next, and the PC volume.
+- **YouTube / Spotify on the tablet:** each opens on a hidden second screen that only the tablet shows. Tap, scroll and type on the tablet to use the real app. The PC's own screen is never touched, and the game keeps focus the whole time.
+  - **Spotify:** your own Spotify app. The first time, TabletPen restarts it once so it can be controlled.
+  - **YouTube:** a dedicated Brave window (Edge or Chrome if Brave isn't installed). Tap **Sign in** once on the tablet and it's your account and channel. It can't be your everyday Brave window, because Chromium refuses remote control of a browser's main profile; that's a deliberate security rule.
+  - **App bar:** ◀ Back, switch YouTube / Spotify, ⌨ Type, play/pause and volume, **Turn off** (removes the hidden screen) and ✕ Close.
+- **Hidden screen:** a 1920×1200 virtual monitor from the Parsec Virtual Display Driver, installed once with admin rights. TabletPen plugs it in to the right of your real screens without changing their setup (TV, duplicate and so on), and removes it on **Turn off**, from the tray, or when TabletPen quits.
+- Input goes into the apps through Chromium's local DevTools channel (127.0.0.1 only), not as Windows mouse or keyboard input. That's why the game never loses focus.
+- **Over Bluetooth:** Now playing works, but showing the hidden screen needs USB or Wi-Fi.
 
 ## Sidebar extras
 - **📸 shot:** one tap saves a full-resolution screenshot of the PC screen (or the mapped window) to the PC's `Pictures\Screenshots`. A copy also goes to the tablet's gallery (`Pictures/TabletPen`), which you can turn off in settings.
@@ -55,7 +74,16 @@ The PC is always the side that connects, so Windows Firewall never asks anything
 - Trusted tablets are stored in `%APPDATA%\TabletPen\trusted.json`. The log is in `log.txt` in the same folder.
 
 ## Files
-- **PC:** `main.py` (tray app), `core.py` (approval, pen dispatch, preview), `net_links.py` (USB and Wi-Fi), `ble_link.py`, `pen.py` (Windows pen injection).
+- **PC:**
+  - `main.py`: tray app.
+  - `core.py`: approval, modes, pen dispatch, preview.
+  - `media.py`: now playing.
+  - `appscreen.py`: the hidden media screen, with YouTube and Spotify over DevTools.
+  - `vdd.py`: Parsec virtual monitor and display layout.
+  - `paint.py`: Paint over UI Automation.
+  - `net_links.py`: USB and Wi-Fi.
+  - `ble_link.py`: Bluetooth.
+  - `pen.py`: Windows pen and touch injection.
 - **Tablet:** `android/` (native links: `Net.java`, `Ble.java`, `Hub.java`), which hosts `pad.html` (the drawing UI).
 
 ## Build

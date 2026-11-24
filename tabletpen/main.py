@@ -178,6 +178,31 @@ def main():
             set_status("Couldn't start – see log")
             return
         holder["core"] = core
+        try:
+            from media import Media
+            core.media = Media(core)
+            loop.create_task(guard(core.media.run(), "media"))
+        except Exception:
+            log("[media] failed to start:\n" + traceback.format_exc())
+        try:
+            from paint import Paint
+            core.paint = Paint()
+        except Exception:
+            log("[paint] failed to start:\n" + traceback.format_exc())
+        try:
+            from appscreen import AppScreen
+            if AppScreen.available():
+                core.screen = AppScreen(core.settings, core.save_settings)
+            else:
+                log("[screen] virtual display driver not installed - media screen off")
+        except Exception:
+            log("[screen] failed to start:\n" + traceback.format_exc())
+        try:
+            from ytsync import YtSync
+            core.yt = YtSync()
+        except Exception:
+            log("[yt] failed to start:\n" + traceback.format_exc())
+        loop.create_task(guard(core.mode_loop(), "mode"))
         core.status()
         loop.create_task(guard(usb_loop(core, notify), "usb"))
         loop.create_task(guard(wifi_loop(core), "wifi"))
@@ -197,7 +222,23 @@ def main():
                 notify(f"Looking for the tablet at {ip.strip()}…")
         threading.Thread(target=work, daemon=True).start()
 
+    def yt_signin():
+        c = holder.get("core")
+        if c and c.yt:
+            threading.Thread(target=c.yt.show_for_signin, daemon=True).start()
+
+    def screen_off():
+        c = holder.get("core")
+        if c and c.screen:
+            threading.Thread(target=c.screen.unplug, daemon=True).start()
+
     def quit_app(icon_, _):
+        c = holder.get("core")
+        if c and c.screen:
+            try:
+                c.screen.unplug()               # tuck the media-screen apps away before the monitor goes
+            except Exception:
+                pass
         icon_.stop()
         os._exit(0)
 
@@ -208,6 +249,8 @@ def main():
         pystray.MenuItem(diag("ble", "Bluetooth"), None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Connect to tablet by IP…", add_ip),
+        pystray.MenuItem("Sign in to YouTube (for the tablet)…", lambda i, _: yt_signin()),
+        pystray.MenuItem("Turn off media screen", lambda i, _: screen_off()),
         pystray.MenuItem("Open screenshots folder", lambda i, _: open_shots()),
         pystray.MenuItem("Open log", lambda i, _: os.startfile(log_path)),
         pystray.MenuItem("Start with Windows", lambda i, _: set_autostart(not autostart_enabled()),

@@ -154,6 +154,69 @@ class Pen:
             self._send(*self.last, F_UPDATE | F_PRIMARY | F_CONFIDENCE)
 
 
+PT_TOUCH = 2
+TOUCH_MASK_CONTACTAREA, TOUCH_MASK_PRESSURE = 1, 4
+
+
+class Touch:
+    """Synthetic multi-finger touch. Unlike the mouse it doesn't move the cursor, and windows marked
+    "no-activate" can be tapped, scrolled and dragged without taking focus from the game."""
+
+    def __init__(self, contacts=10):
+        self.dev = user32.CreateSyntheticPointerDevice(PT_TOUCH, contacts, POINTER_FEEDBACK_DEFAULT)
+        if not self.dev:
+            raise OSError(ctypes.get_last_error(), "CreateSyntheticPointerDevice(touch) failed")
+        self.pts = {}            # id -> (x, y)
+
+    def _frame(self, changes):
+        """changes: {id: 'down'|'move'|'up'}; every finger in contact is part of each frame."""
+        ids = sorted(set(self.pts) | set(changes))
+        arr = (POINTER_TYPE_INFO * len(ids))()
+        for i, pid in enumerate(ids):
+            x, y = self.pts[pid]
+            ch = changes.get(pid, "move")
+            t = arr[i]
+            t.type = PT_TOUCH
+            ti = t.touchInfo
+            pi = ti.pointerInfo
+            pi.pointerType = PT_TOUCH
+            pi.pointerId = pid
+            pi.ptPixelLocation = w.POINT(int(x), int(y))
+            if ch == "down":
+                pi.pointerFlags = F_DOWN | F_INRANGE | F_INCONTACT | F_CONFIDENCE | F_NEW
+            elif ch == "up":
+                pi.pointerFlags = F_UP
+            else:
+                pi.pointerFlags = F_UPDATE | F_INRANGE | F_INCONTACT | F_CONFIDENCE
+            if pid == min(ids):
+                pi.pointerFlags |= F_PRIMARY
+            ti.touchMask = TOUCH_MASK_CONTACTAREA | TOUCH_MASK_PRESSURE
+            ti.rcContact = w.RECT(int(x) - 2, int(y) - 2, int(x) + 2, int(y) + 2)
+            ti.pressure = 512
+        ok = user32.InjectSyntheticPointerInput(self.dev, arr, len(ids))
+        for pid, ch in changes.items():
+            if ch == "up":
+                self.pts.pop(pid, None)
+        return ok
+
+    def down(self, pid, x, y):
+        self.pts[pid] = (x, y)
+        return self._frame({pid: "down"})
+
+    def move(self, pid, x, y):
+        if pid in self.pts:
+            self.pts[pid] = (x, y)
+            return self._frame({})
+
+    def up(self, pid):
+        if pid in self.pts:
+            return self._frame({pid: "up"})
+
+    def cancel_all(self):
+        for pid in list(self.pts):
+            self.up(pid)
+
+
 KEYEVENTF_KEYUP = 2
 
 

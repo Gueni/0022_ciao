@@ -214,6 +214,8 @@ class Ble extends BluetoothGattServerCallback {
         private byte[] retry;
         private int frameId = -1, frameGot;
         private byte[][] frame;
+        private int bigId = -1, bigGot;
+        private byte[][] big;
 
         BleLink(BluetoothDevice d) {
             super("ble");
@@ -254,6 +256,26 @@ class Ble extends BluetoothGattServerCallback {
                         for (byte[] p : frame) out.write(p, 0, p.length);
                         frame = null;
                         hub.frame(this, out.toByteArray());
+                    }
+                }
+            } else if (v[0] == 0x23 && v.length > 6) {     // a big packet (media lists, cover art) in chunks
+                int pid = v[1] & 0xFF;
+                int idx = (v[2] & 0xFF) | (v[3] & 0xFF) << 8;
+                int total = (v[4] & 0xFF) | (v[5] & 0xFF) << 8;
+                if (pid != bigId || big == null || big.length != total) {
+                    bigId = pid;
+                    big = new byte[total][];
+                    bigGot = 0;
+                }
+                if (idx < total && big[idx] == null) {
+                    byte[] part = new byte[v.length - 6];
+                    System.arraycopy(v, 6, part, 0, part.length);
+                    big[idx] = part;
+                    if (++bigGot == total) {
+                        ByteArrayOutputStream out = new ByteArrayOutputStream();
+                        for (byte[] p : big) out.write(p, 0, p.length);
+                        big = null;
+                        hub.data(this, out.toByteArray());
                     }
                 }
             } else {

@@ -120,6 +120,19 @@ class Hub {
             publish();
         } else if (v[0] == 0x22) {
             frame(l, Arrays.copyOfRange(v, 1, v.length));
+        } else if (v[0] == 0x32 && l == active) {          // the PC's YouTube login, for the YouTube tab
+            js.toJs("ytcookies", new String(v, 1, v.length - 1, StandardCharsets.UTF_8));
+        } else if (v[0] == 0x30 && l == active) {           // media: now playing / search results (JSON)
+            js.toJs("media", new String(v, 1, v.length - 1, StandardCharsets.UTF_8));
+        } else if (v[0] == 0x31 && v.length > 2 && l == active) {   // media image: [key len][key][jpeg]
+            int n = v[1] & 0xFF;
+            if (v.length <= 2 + n) return;
+            String key = new String(v, 2, n, StandardCharsets.UTF_8);
+            synchronized (images) {
+                images.put(key, Arrays.copyOfRange(v, 2 + n, v.length));
+                while (images.size() > 120) images.remove(images.keySet().iterator().next());
+            }
+            js.toJs("img", key);
         }
     }
 
@@ -135,6 +148,12 @@ class Hub {
             while (frames.size() > 32) frames.remove(frames.keySet().iterator().next());
         }
         js.toJs("frame", seq + "," + h[0] + "," + h[1] + "," + h[2] + "," + h[3] + "," + h[4] + "," + h[5]);
+    }
+
+    private final java.util.LinkedHashMap<String, byte[]> images = new java.util.LinkedHashMap<>();
+
+    byte[] image(String key) {
+        synchronized (images) { return key == null ? null : images.get(key); }
     }
 
     byte[] frameBytes(int seq) {

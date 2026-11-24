@@ -48,7 +48,7 @@ def adb(*args, timeout=10):
 
 
 class TcpLink(Link):
-    preview_spec = (1920, 1200, 85, False, 1 / 15)     # sharp; resized to what the tablet asks for,
+    preview_spec = (1920, 1200, 85, False, 1 / 25)     # sharp; resized to what the tablet asks for,
                                                        # paced by the tablet's frame acks
 
     def __init__(self, core, kind, reader, writer):

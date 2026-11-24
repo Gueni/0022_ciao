@@ -1,0 +1,6 @@
+__pycache__/
+android/build/
+android/assets/
+TabletPen.apk
+TabletPen.apk.idsig
+TabletPen.exe

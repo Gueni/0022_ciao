@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>TabletPen</title>
+<style>
+  :root { --bar: 64px; --dock: 0px; --fg: #e8e8ea; --dim: #8a8a92; --acc: #4da3ff; --bg: #111114; --btn: #1e1e24; --ok: #3c6; --warn: #db3; }
+  * { box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 14px/1.35 system-ui, sans-serif; touch-action: none; overscroll-behavior: none; }
+  #bar { position: fixed; left: 0; top: 0; bottom: 0; width: var(--bar); display: flex; flex-direction: column;
+    align-items: center; gap: 6px; padding: 8px 0; background: #0b0b0d; border-right: 1px solid #222; z-index: 5; overflow-y: auto; }
+  #bar button { flex: none; width: 52px; height: 48px; border: 0; border-radius: 10px; background: var(--btn); color: var(--fg);
+    font-size: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; position: relative; }
+  #bar button small { font-size: 9px; color: var(--dim); }
+  #bar button.on { background: var(--acc); color: #fff; }
+  #bar button.on small { color: #e6f1ff; }
+  #bar .sp { flex: 1; min-height: 6px; }
+  #bLink i { position: absolute; top: 5px; right: 6px; width: 9px; height: 9px; border-radius: 50%; background: #c33; }
+  #bLink i.ok { background: var(--ok); } #bLink i.wait { background: var(--warn); }
+  #pad { position: fixed; left: var(--bar); top: 0; right: 0; bottom: var(--dock); touch-action: none; }
+  #pad.dragging { box-shadow: inset 0 0 0 3px #4da3ff; }
+  #box { position: absolute; outline: 1px solid #333; background: #000; }
+  #box canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #hover { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+    border: 1.5px solid var(--acc); pointer-events: none; display: none; z-index: 3; }
+  #hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+    color: var(--dim); pointer-events: none; padding: 24px; z-index: 2; }
+  #hint b { display: block; color: var(--fg); font-size: 19px; font-weight: 600; margin-bottom: 6px; }
+  #label { position: fixed; right: 10px; top: 8px; color: var(--dim); font-size: 11px; pointer-events: none;
+    background: #000a; padding: 3px 7px; border-radius: 6px; z-index: 4; }
+  #label:empty { display: none; }
+  /* remote-control dock */
+  #dock { position: fixed; left: var(--bar); right: 0; bottom: 0; display: none; flex-direction: column;
+    gap: 5px; padding: 6px; background: #0b0b0d; border-top: 1px solid #222; z-index: 5; }
+  body.remote #dock { display: flex; }
+  .keys { display: flex; flex-wrap: wrap; gap: 5px; }
+  .keys button { flex: 1 0 auto; min-width: 40px; height: 38px; padding: 0 6px; border: 0; border-radius: 8px;
+    background: var(--btn); color: var(--fg); font-size: 13px; white-space: nowrap; }
+  .keys button.wide { flex-grow: 1.5; }
+  .keys button.acc { background: #24364d; }
+  .keys button:active, .keys button.on { background: var(--acc); color: #fff; }
+  .keys .sep { flex: none; width: 1px; background: #2a2a31; margin: 5px 1px; }
+  #kbd { position: fixed; left: var(--bar); top: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px;
+    border: 0; padding: 0; -webkit-user-select: text; user-select: text; }
+  #toast { position: fixed; left: 50%; bottom: calc(var(--dock) + 16px); transform: translateX(-50%); z-index: 12;
+    background: #222a; backdrop-filter: blur(6px); color: var(--fg); padding: 8px 14px; border-radius: 10px;
+    font-size: 13px; pointer-events: none; opacity: 0; transition: opacity .2s; }
+  #toast.show { opacity: 1; }
+  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .35s; }
+  #flash.on { opacity: .7; transition: none; }
+  /* sheets (connection, settings) */
+  .sheet { position: fixed; inset: 0; background: #0009; z-index: 10; display: none; align-items: center; justify-content: center; }
+  .sheet.show { display: flex; }
+  .card { width: min(460px, 92vw); max-height: 90vh; overflow-y: auto; background: #18181d; border: 1px solid #2a2a31;
+    border-radius: 16px; padding: 18px 18px 14px; touch-action: pan-y; }
+  .card header { display: flex; align-items: center; margin-bottom: 12px; }
+  .card h2 { margin: 0; font-size: 18px; flex: 1; }
+  .card h3 { margin: 14px 0 6px; font-size: 13px; color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .x { width: 40px; height: 40px; border: 0; border-radius: 10px; background: var(--btn); color: var(--fg); font-size: 18px; }
+  .set { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: #1f1f25; border-radius: 12px; margin-bottom: 6px; }
+  .set span { flex: 1; } .set input[type=range] { width: 46%; accent-color: var(--acc); }
+  .set input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--acc); }
+  .tips { margin: 0; padding-left: 18px; color: var(--dim); font-size: 13px; line-height: 1.6; }
+  .tips b { color: var(--fg); font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; background: #1f1f25;
+    margin-bottom: 8px; border: 1px solid transparent; }
+  .row.active { border-color: var(--acc); }
+  .row .ic { font-size: 20px; width: 26px; text-align: center; }
+  .row .t { flex: 1; } .row .t b { display: block; font-weight: 600; } .row .t span { color: var(--dim); font-size: 12px; }
+  .row .st { font-size: 12px; color: var(--dim); }
+  .row.active .st { color: var(--acc); }
+  .empty { color: var(--dim); padding: 14px 4px; }
+  .help { color: var(--dim); font-size: 12px; margin-top: 10px; line-height: 1.5; }
+  .help code { color: var(--fg); font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="bLink"><i></i>🔗<small>link</small></button>
+  <button id="bRemote">🖱<small>remote</small></button>
+  <button id="bErase">⌫<small>eraser</small></button>
+  <button id="bUndo">↶<small>undo</small></button>
+  <button id="bRedo">↷<small>redo</small></button>
+  <button id="bClear">🧹<small>clear</small></button>
+  <button id="bShot">📸<small>shot</small></button>
+  <button id="bScreen">🖥<small>screen</small></button>
+  <button id="bWin">▣<small>window</small></button>
+  <button id="bPrev" class="on">👁<small>preview</small></button>
+  <button id="bFinger">☝<small>finger</small></button>
+  <button id="bSet">⚙<small>settings</small></button>
+</div>
+<div id="pad">
+  <div id="box"><canvas id="bg"></canvas><canvas id="ink"></canvas><div id="flash"></div></div>
+  <div id="hint"></div>
+  <div id="hover"></div>
+</div>
+<div id="label"></div>
+
+<div id="dock">
+  <div class="keys">
+    <button class="wide acc" id="kKbd">⌨ Type</button>
+    <button class="acc" data-btn="1">Left</button>
+    <button class="acc" data-btn="2">Right</button>
+    <div class="sep"></div>
+    <button data-k="27">Esc</button>
+    <button data-k="9">Tab</button>
+    <button data-k="13">Enter</button>
+    <button data-k="8">⌫</button>
+    <button data-k="46">Del</button>
+    <button data-k="32">Space</button>
+    <div class="sep"></div>
+    <button data-k="37">←</button>
+    <button data-k="38">↑</button>
+    <button data-k="40">↓</button>
+    <button data-k="39">→</button>
+    <button data-k="33">PgUp</button>
+    <button data-k="34">PgDn</button>
+  </div>
+  <div class="keys">
+    <button data-k="91">⊞ Start</button>
+    <button data-k="18,9" class="wide">Switch</button>
+    <button data-k="91,9" class="wide">Windows</button>
+    <button data-k="91,68" class="wide">Desktop</button>
+    <button data-k="18,115" class="wide">✕ Close</button>
+    <button data-k="17,67">Copy</button>
+    <button data-k="17,86">Paste</button>
+    <div class="sep"></div>
+    <button data-k="177">⏮</button>
+    <button data-k="179">⏯</button>
+    <button data-k="176">⏭</button>
+    <button data-k="174">🔉</button>
+    <button data-k="173">🔇</button>
+    <button data-k="175">🔊</button>
+    <button data-k="122">F11</button>
+  </div>
+</div>
+<input id="kbd" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+
+<div id="sheet" class="sheet"><div class="card">
+  <header><h2>Connection</h2><button class="x" id="close" aria-label="Close">✕</button></header>
+  <div id="list"></div>
+  <div class="help" id="help"></div>
+</div></div>
+
+<div id="setSheet" class="sheet"><div class="card">
+  <header><h2>Settings &amp; tips</h2><button class="x" id="setClose" aria-label="Close">✕</button></header>
+  <h3>Touchpad</h3>
+  <label class="set"><span>Pointer speed</span><input type="range" id="sSpeed" min="0.4" max="3" step="0.1"></label>
+  <label class="set"><span>Scroll speed</span><input type="range" id="sScroll" min="0.3" max="3" step="0.1"></label>
+  <label class="set"><span>Natural scrolling (content follows fingers)</span><input type="checkbox" id="sNatural"></label>
+  <h3>Screenshot</h3>
+  <label class="set"><span>Also save a copy on the tablet (Gallery › TabletPen)</span><input type="checkbox" id="sShotTab"></label>
+  <h3>Remote mode (🖱)</h3>
+  <ul class="tips">
+    <li><b>1 finger</b> moves the pointer · <b>tap</b> = click · <b>two taps</b> = double-click</li>
+    <li><b>2-finger tap</b> = right-click · <b>3-finger tap</b> = middle-click</li>
+    <li><b>2 fingers</b> slide to scroll</li>
+    <li><b>Press &amp; hold still</b> (blue border) = grab, then slide to drag, lift to drop</li>
+    <li><b>⌨ Type</b> opens the keyboard. Tap anywhere outside it to close it.</li>
+    <li>The pen still draws while remote mode is on.</li>
+  </ul>
+  <h3>Pen</h3>
+  <ul class="tips">
+    <li>Draws in Paint, OneNote, Whiteboard, Krita… with pressure and tilt. The side button works as the eraser in most apps.</li>
+    <li><b>🖥 screen</b> switches monitor · <b>▣ window</b> maps the tablet onto the active window only</li>
+    <li><b>👁 preview</b> shows the PC screen on the tablet · <b>☝ finger</b> lets fingers draw too</li>
+    <li><b>📸 shot</b> saves a full-resolution screenshot in the PC's <b>Pictures › Screenshots</b> folder.</li>
+  </ul>
+</div></div>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const pad = $('pad'), box = $('box'), bg = $('bg'), ink = $('ink'), hov = $('hover'), label = $('label');
+const bgx = bg.getContext('2d'), inkx = ink.getContext('2d');
+const N = window.Native || { send() {}, select() {}, start() {}, ip() { return ''; } };
+const store = {
+  get(k, d) { try { return localStorage.getItem('tp.' + k) ?? d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('tp.' + k, v); } catch (e) {} },
+};
+let target = { w: 16, h: 9, name: '' }, rect = { x: 0, y: 0, w: 1, h: 1 };
+let eraser = false, preview = store.get('preview', '1') === '1', fingers = false, drawing = false, last = null, upTime = 0;
+let remote = store.get('remote', '0') === '1';
+let links = [], active = null, activeId = null, btOff = false;
+$('bPrev').classList.toggle('on', preview);
+
+const ICON = { usb: '🔌', wifi: '📶', ble: 'ᛒ' }, KIND = { usb: 'USB', wifi: 'Wi-Fi', ble: 'Bluetooth' };
+const ready = () => active && active.auth === 'ok';
+
+// ---------------------------------------------------------------- layout
+function layout() {
+  document.body.classList.toggle('remote', remote);
+  // the dock sizes itself to its buttons (they shrink/wrap to fit); the drawing area takes the rest
+  document.documentElement.style.setProperty('--dock', remote ? $('dock').offsetHeight + 'px' : '0px');
+  $('bRemote').classList.toggle('on', remote);
+  const pw = pad.clientWidth, ph = pad.clientHeight, a = target.w / target.h;
+  let w = pw, h = pw / a;
+  if (h > ph) { h = ph; w = ph * a; }
+  rect = { x: (pw - w) / 2, y: (ph - h) / 2, w, h };
+  Object.assign(box.style, { left: rect.x + 'px', top: rect.y + 'px', width: w + 'px', height: h + 'px' });
+  const d = devicePixelRatio || 1;
+  for (const c of [bg, ink]) { c.width = Math.round(w * d); c.height = Math.round(h * d); }
+  inkx.setTransform(d, 0, 0, d, 0, 0);
+  bgx.imageSmoothingQuality = 'high';
+  sendSize();
+}
+
+// tell the PC how many real pixels the preview has, so it sends frames at exactly that size (sharp)
+function sendSize() {
+  if (!ready()) return;
+  const d = devicePixelRatio || 1;
+  const b = new Uint8Array(5), dv = new DataView(b.buffer);
+  b[0] = 8;
+  dv.setUint16(1, Math.round(rect.w * d), true);
+  dv.setUint16(3, Math.round(rect.h * d), true);
+  sendBytes(b);
+}
+
+// ---------------------------------------------------------------- native bridge
+function sendBytes(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); N.send(btoa(s)); }
+function cmd(c) { sendBytes(new Uint8Array([2, c])); }
+
+function render() {
+  $('bLink').querySelector('i').className = ready() ? 'ok' : links.length ? 'wait' : '';
+  const pending = links.find(l => l.auth === 'pending');
+  $('hint').style.display = ready() ? 'none' : '';
+  $('hint').innerHTML = pending
+    ? `<div><b>Approve on the PC</b>Click “Yes” in the TabletPen popup on ${esc(pending.pc || 'the PC')}.</div>`
+    : `<div><b>Looking for your PC…</b>Open TabletPen on the PC.<br>It connects by itself over USB, Wi-Fi or Bluetooth.</div>`;
+  label.textContent = ready() ? `${KIND[active.kind]} · ${active.pc} → ${target.name}` : '';
+  const list = $('list');
+  list.innerHTML = links.length ? '' : '<div class="empty">No PC connected yet.</div>';
+  for (const l of links) {
+    const r = document.createElement('div');
+    r.className = 'row' + (l.active ? ' active' : '');
+    const st = l.auth === 'ok' ? (l.active ? 'In use' : 'Tap to use')
+      : l.auth === 'pending' ? 'Approve on PC' : l.auth === 'denied' ? 'Not allowed' : 'Connecting…';
+    r.innerHTML = `<div class="ic">${ICON[l.kind] || '•'}</div><div class="t"><b>${esc(l.pc || 'PC')}</b><span>${KIND[l.kind] || l.kind}</span></div><div class="st">${st}</div>`;
+    if (l.auth === 'ok' && !l.active) r.addEventListener('click', () => N.select(l.id));
+    list.appendChild(r);
+  }
+  let ip = '';
+  try { ip = N.ip(); } catch (e) {}
+  $('help').innerHTML = 'Run <b>TabletPen</b> on the PC. It connects by itself: plug in USB, be on the same Wi-Fi, or just have Bluetooth on.'
+    + (ip ? `<br>Network blocks it? In the PC's tray menu choose “Connect to tablet by IP” and enter <code>${esc(ip)}</code>.` : '')
+    + (btOff ? '<br><b style="color:var(--warn)">Bluetooth is off on this tablet.</b>' : '');
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+window.onNative = (type, data) => {
+  if (type === 'links') {
+    links = JSON.parse(data);
+    active = links.find(l => l.active) || null;
+    const id = active ? active.id : null;
+    if (id !== activeId) {          // switched connection: start fresh
+      activeId = id;
+      bgx.clearRect(0, 0, bg.width, bg.height);
+      if (active) { cmd(preview ? 5 : 6); sendSize(); }
+    }
+    render();
+  } else if (type === 'msg') {
+    const m = JSON.parse(data);
+    if (m.toast) { toast(m.toast); return; }
+    if (m.cfg) { target = m.cfg; layout(); render(); }
+  } else if (type === 'frame') {
+    onFrame(data);
+  } else if (type === 'bt') {
+    btOff = data === 'off'; render();
+  }
+};
+
+// Frames are decoded off the UI thread (img.decode) so touches stay instant, and each one is
+// acknowledged (0x0A): the PC sends the next frame only after that, so frames never queue up.
+// Each frame is a patch: only the part of the PC screen that changed, drawn in place.
+let decoding = false;
+const frameQ = [];
+const ackFrame = () => { if (ready()) sendBytes(new Uint8Array([10])); };
+function onFrame(data) {
+  frameQ.push(data.split(',').map(Number));     // seq, W, H, x, y, w, h
+  nextFrame();
+}
+function nextFrame() {
+  if (decoding || !frameQ.length) return;
+  const [seq, W, H, x, y, w, h] = frameQ.shift();
+  if (!preview) { ackFrame(); return nextFrame(); }
+  decoding = true;
+  const img = new Image();
+  img.src = '/frame?' + seq;
+  img.decode().then(() => {
+    const kx = bg.width / W, ky = bg.height / H;
+    bgx.drawImage(img, x * kx, y * ky, w * kx, h * ky);
+    // the PC now shows the finished stroke: drop the local ink trail
+    const lag = active && active.kind === 'ble' ? 1500 : 350;
+    if (!drawing && upTime && performance.now() - upTime > lag) { clearInk(); upTime = 0; }
+  }).catch(() => {}).finally(() => {
+    decoding = false;
+    ackFrame();
+    nextFrame();
+  });
+}
+
+// ---------------------------------------------------------------- sheet
+function showSheet(on) { $('sheet').classList.toggle('show', on); if (on) render(); }
+$('close').addEventListener('click', () => showSheet(false));
+$('sheet').addEventListener('click', e => { if (e.target === $('sheet')) showSheet(false); });
+
+// ---------------------------------------------------------------- pen input
+// anything that isn't a finger counts as the pen (some stylus drivers report an empty pointerType)
+const isTouch = e => e.pointerType === 'touch';
+function wanted(e) { return !isTouch(e) || (fingers && !remote && e.isPrimary); }
+const isPen = e => !isTouch(e) && e.pointerType !== 'mouse';
+function flags(e) {
+  let f = 0;
+  if (e.buttons & 2) f |= 1;
+  if (eraser || (e.buttons & 32) || e.button === 5) f |= 4;
+  return f;
+}
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+function encode(list) {
+  const buf = new Uint8Array(1 + list.length * 10), dv = new DataView(buf.buffer);
+  buf[0] = 1;
+  const r = pad.getBoundingClientRect();
+  list.forEach(([kind, e], i) => {
+    const o = 1 + i * 10;
+    const x = clamp((e.clientX - r.left - rect.x) / rect.w, 0, 1);
+    const y = clamp((e.clientY - r.top - rect.y) / rect.h, 0, 1);
+    const p = isPen(e) ? e.pressure : (kind === 1 || kind === 2 ? 0.6 : 0);
+    dv.setUint8(o, kind);
+    dv.setUint16(o + 1, Math.round(x * 65535), true);
+    dv.setUint16(o + 3, Math.round(y * 65535), true);
+    dv.setUint16(o + 5, Math.round(clamp(p, 0, 1) * 65535), true);
+    dv.setInt8(o + 7, clamp(Math.round(e.tiltX || 0), -90, 90));
+    dv.setInt8(o + 8, clamp(Math.round(e.tiltY || 0), -90, 90));
+    dv.setUint8(o + 9, kind === 4 ? 0 : flags(e));
+  });
+  return buf;
+}
+function send(list) { if (ready()) sendBytes(encode(list)); }
+
+function drawInk(e) {
+  const r = pad.getBoundingClientRect();
+  const x = e.clientX - r.left - rect.x, y = e.clientY - r.top - rect.y;
+  const p = isPen(e) ? e.pressure : 0.6;
+  if (last) {
+    inkx.strokeStyle = (flags(e) & 4) ? 'rgba(255,90,90,.7)' : 'rgba(77,163,255,.9)';
+    inkx.lineWidth = 0.8 + p * 3.5; inkx.lineCap = 'round';
+    inkx.beginPath(); inkx.moveTo(last[0], last[1]); inkx.lineTo(x, y); inkx.stroke();
+  }
+  last = [x, y];
+}
+function clearInk() { inkx.clearRect(0, 0, ink.width, ink.height); }
+
+// ---------------------------------------------------------------- remote control: touchpad
+const R = { move: 1, button: 2, scroll: 3, text: 4, keys: 5 };
+function rsend(sub, ...rest) { if (ready()) sendBytes(new Uint8Array([9, sub, ...rest])); }
+function i16(v) { v = clamp(Math.round(v), -32768, 32767); return [v & 255, (v >> 8) & 255]; }
+const mouseBtn = (b, a) => rsend(R.button, b, a);         // a: 0 click, 1 down, 2 up
+const pressKeys = vks => rsend(R.keys, ...vks);
+function typeText(s) { if (s) rsend(R.text, ...new TextEncoder().encode(s)); }
+
+// user settings (⚙ sheet)
+const cfg = {
+  speed: Number(store.get('speed', '1')), scroll: Number(store.get('scroll', '1')),
+  natural: store.get('natural', '1') === '1', shotTab: store.get('shotTab', '1') === '1',
+};
+function bindSetting(id, key, isBool) {
+  const el = $(id);
+  if (isBool) el.checked = cfg[key]; else el.value = cfg[key];
+  el.addEventListener(isBool ? 'change' : 'input', () => {
+    cfg[key] = isBool ? el.checked : Number(el.value);
+    store.set(key, isBool ? (el.checked ? '1' : '0') : el.value);
+  });
+}
+bindSetting('sSpeed', 'speed'); bindSetting('sScroll', 'scroll');
+bindSetting('sNatural', 'natural', true); bindSetting('sShotTab', 'shotTab', true);
+
+const tp = { pts: new Map(), downT: 0, moved: 0, maxPts: 0, hold: 0, drag: false,
+             mx: 0, my: 0, sx: 0, sy: 0, raf: 0 };
+function flushMove() {
+  tp.raf = 0;
+  const dx = Math.trunc(tp.mx), dy = Math.trunc(tp.my);
+  if (dx || dy) { rsend(R.move, ...i16(dx), ...i16(dy)); tp.mx -= dx; tp.my -= dy; }
+  const sy = Math.trunc(tp.sy / 2) * 2, sx = Math.trunc(tp.sx / 2) * 2;
+  if (sx || sy) { rsend(R.scroll, ...i16(sy), ...i16(sx)); tp.sy -= sy; tp.sx -= sx; }
+}
+function queue() { if (!tp.raf) tp.raf = requestAnimationFrame(flushMove); }
+
+function setDrag(on) { tp.drag = on; pad.classList.toggle('dragging', on); }
+function tpDown(e) {
+  tp.pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: e.timeStamp });
+  pad.setPointerCapture(e.pointerId);
+  clearTimeout(tp.hold);
+  if (tp.pts.size === 1) {
+    tp.downT = e.timeStamp; tp.moved = 0; tp.maxPts = 1;
+    // press & hold without moving = grab (left button held) – then slide to drag, lift to drop
+    tp.hold = setTimeout(() => {
+      if (tp.pts.size === 1 && tp.moved < 14) { setDrag(true); mouseBtn(1, 1); }
+    }, 450);
+  } else {
+    tp.maxPts = Math.max(tp.maxPts, tp.pts.size);
+  }
+}
+function tpMove(e) {
+  const p = tp.pts.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y, dt = Math.max(1, e.timeStamp - p.t);
+  p.x = e.clientX; p.y = e.clientY; p.t = e.timeStamp;
+  tp.moved += Math.abs(dx) + Math.abs(dy);
+  if (tp.pts.size === 1) {
+    if (tp.moved < 8 && !tp.drag) return;   // dead zone: a tap must not nudge the pointer (double-clicks)
+    const speed = Math.hypot(dx, dy) / dt;                    // css px per ms
+    const gain = cfg.speed * 1.6 * (1 + clamp((speed - 0.25) * 2.2, 0, 3.5)); // pointer acceleration
+    tp.mx += dx * gain; tp.my += dy * gain;
+  } else if (tp.pts.size === 2) {
+    const k = 4 * cfg.scroll * (cfg.natural ? 1 : -1);   // natural: content follows the fingers
+    tp.sy += dy * k; tp.sx += -dx * k;
+  }
+  queue();
+}
+function tpUp(e) {
+  if (!tp.pts.delete(e.pointerId) || tp.pts.size) return;
+  clearTimeout(tp.hold);
+  const dur = e.timeStamp - tp.downT, still = tp.moved < 24;   // forgiving: fingers wobble a bit
+  if (tp.drag) {
+    mouseBtn(1, 2); setDrag(false);
+  } else if (still && dur < 450) {
+    if (tp.maxPts === 2) mouseBtn(2, 0);
+    else if (tp.maxPts >= 3) mouseBtn(3, 0);
+    else mouseBtn(1, 0);                                        // click right away; two taps = double-click
+  }
+}
+
+// ---------------------------------------------------------------- pointer routing
+pad.addEventListener('pointerdown', e => {
+  if (remote && isTouch(e)) { e.preventDefault(); return tpDown(e); }
+  if (!wanted(e)) return;
+  e.preventDefault();
+  pad.setPointerCapture(e.pointerId);
+  drawing = true; last = null; upTime = 0;
+  drawInk(e);
+  send([[1, e]]);
+});
+pad.addEventListener('pointermove', e => {
+  if (remote && isTouch(e)) return tpMove(e);
+  if (!wanted(e)) return;
+  const r = pad.getBoundingClientRect();
+  hov.style.display = 'block';
+  hov.style.left = (e.clientX - r.left) + 'px'; hov.style.top = (e.clientY - r.top) + 'px';
+  let list = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  if (!list.length) list = [e];
+  if (drawing) list.forEach(drawInk); else list = [e];
+  send(list.map(ce => [drawing ? 2 : 0, ce]));
+});
+function end(e) {
+  if (remote && isTouch(e)) return tpUp(e);
+  if (!wanted(e) || !drawing) return;
+  drawing = false; last = null; upTime = performance.now();
+  send([[3, e]]);
+}
+pad.addEventListener('pointerup', end);
+pad.addEventListener('pointercancel', end);
+pad.addEventListener('pointerleave', e => {
+  if (isTouch(e) || !wanted(e) || drawing) return;
+  hov.style.display = 'none';
+  send([[4, e]]);
+});
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------------------------------------------------------------- remote control: keys & keyboard
+for (const b of document.querySelectorAll('#dock [data-k]'))
+  b.addEventListener('click', () => pressKeys(b.dataset.k.split(',').map(Number)));
+for (const b of document.querySelectorAll('#dock [data-btn]'))
+  b.addEventListener('click', () => mouseBtn(Number(b.dataset.btn), 0));
+
+// The on-screen keyboard types into a hidden field. We keep a buffer of spaces in it so that
+// Backspace always has something to delete, and send the difference to the PC.
+const kbd = $('kbd'), PAD = '                    ';
+let kbdPrev = PAD, composing = false;
+function kbdReset() { kbd.value = PAD; kbdPrev = PAD; kbd.setSelectionRange(PAD.length, PAD.length); }
+kbd.addEventListener('compositionstart', () => { composing = true; });
+kbd.addEventListener('compositionend', () => { composing = false; kbdSync(); });
+kbd.addEventListener('input', () => kbdSync());
+function kbdSync() {
+  const cur = kbd.value;
+  let i = 0;
+  while (i < cur.length && i < kbdPrev.length && cur[i] === kbdPrev[i]) i++;
+  const del = kbdPrev.length - i, ins = cur.slice(i);
+  for (let k = 0; k < del; k++) pressKeys([8]);
+  typeText(ins);
+  kbdPrev = cur;
+  if (!composing && (cur.length < 6 || cur.length > 60)) kbdReset();
+}
+kbd.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); pressKeys([13]); }
+});
+$('kKbd').addEventListener('click', () => {
+  if (document.activeElement === kbd) { kbd.blur(); $('kKbd').classList.remove('on'); return; }
+  kbdReset(); kbd.focus(); $('kKbd').classList.add('on');
+});
+kbd.addEventListener('blur', () => $('kKbd').classList.remove('on'));
+// done typing: tap anywhere outside the keyboard to close it (the tap still does its normal job)
+document.addEventListener('pointerdown', e => {
+  if (e.target.closest && e.target.closest('#kKbd')) return;
+  if (document.activeElement === kbd) kbd.blur();
+  $('kKbd').classList.remove('on');
+}, true);
+
+// ---------------------------------------------------------------- screenshot & toast
+let toastT = 0;
+function toast(text) {
+  const t = $('toast'); t.textContent = text; t.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function screenshot() {
+  if (!ready()) return toast('Not connected to a PC');
+  cmd(7);                                         // the PC saves a full-resolution PNG
+  const f = $('flash'); f.classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on')));
+  if (cfg.shotTab && preview && N.saveShot) {     // and a copy of the preview goes to the tablet's gallery
+    const url = bg.toDataURL('image/png');
+    setTimeout(() => { try { N.saveShot(url.slice(url.indexOf(',') + 1)); } catch (e) {} }, 0);
+  }
+}
+
+// ---------------------------------------------------------------- toolbar
+const tap = (id, fn) => $(id).addEventListener('click', fn);
+tap('bLink', () => showSheet(true));
+tap('bShot', screenshot);
+tap('bSet', () => $('setSheet').classList.add('show'));
+tap('setClose', () => $('setSheet').classList.remove('show'));
+$('setSheet').addEventListener('click', e => { if (e.target === $('setSheet')) $('setSheet').classList.remove('show'); });
+tap('bRemote', () => { remote = !remote; store.set('remote', remote ? '1' : '0'); if (!remote) kbd.blur(); layout(); });
+tap('bErase', () => { eraser = !eraser; $('bErase').classList.toggle('on', eraser); });
+tap('bUndo', () => cmd(1));
+tap('bRedo', () => cmd(2));
+tap('bClear', clearInk);
+tap('bScreen', () => cmd(3));
+tap('bWin', () => cmd(4));
+tap('bPrev', () => {
+  preview = !preview; store.set('preview', preview ? '1' : '0');
+  $('bPrev').classList.toggle('on', preview);
+  if (!preview) bgx.clearRect(0, 0, bg.width, bg.height);
+  cmd(preview ? 5 : 6);
+});
+tap('bFinger', () => { fingers = !fingers; $('bFinger').classList.toggle('on', fingers); });
+
+// app in the background / screen off: pause the preview (saves battery and PC CPU), resume when back
+document.addEventListener('visibilitychange', () => {
+  if (!ready()) return;
+  if (document.hidden) cmd(6);
+  else { cmd(preview ? 5 : 6); sendSize(); }
+});
+addEventListener('resize', layout);
+layout();
+render();
+N.start();
+</script>
+</body>
+</html>
